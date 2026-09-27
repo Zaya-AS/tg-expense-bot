@@ -11,6 +11,8 @@ import (
 
 	"github.com/Zaya-AS/tg-expense-bot/internal/config"
 	"github.com/Zaya-AS/tg-expense-bot/internal/db"
+	"github.com/Zaya-AS/tg-expense-bot/internal/storage/postgres"
+	"github.com/Zaya-AS/tg-expense-bot/internal/telegram"
 )
 
 func main() {
@@ -38,6 +40,10 @@ func run(ctx context.Context) error {
 
 	log.Println("successfully connected to PostgreSQL")
 
-	// TODO: start the Telegram poller with ctx and cfg.TelegramBotToken.
-	return nil
+	userRepo := postgres.NewUserRepository(pool)
+	client := telegram.NewClient(cfg.TelegramBotToken)
+	handler := telegram.NewHandler(client, userRepo)
+	poller := telegram.NewPoller(client, handler)
+
+	return poller.Run(ctx)
 }
