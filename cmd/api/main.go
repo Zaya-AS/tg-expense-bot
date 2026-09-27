@@ -41,8 +41,11 @@ func run(ctx context.Context) error {
 	log.Println("successfully connected to PostgreSQL")
 
 	userRepo := postgres.NewUserRepository(pool)
+	categoryRepo := postgres.NewCategoryRepository(pool)
+	expenseRepo := postgres.NewExpenseRepository(pool)
+
 	client := telegram.NewClient(cfg.TelegramBotToken)
-	handler := telegram.NewHandler(client, userRepo)
+	handler := telegram.NewHandler(client, userRepo, categoryRepo, expenseRepo)
 	poller := telegram.NewPoller(client, handler)
 
 	return poller.Run(ctx)
