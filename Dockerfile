@@ -12,7 +12,9 @@ FROM alpine:3
 
 RUN apk add --no-cache ca-certificates tzdata
 
+WORKDIR /app
 COPY --from=build /bot /bot
+COPY migrations /app/migrations
 
 USER 10001:10001
 ENTRYPOINT ["/bot"]

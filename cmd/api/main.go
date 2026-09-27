@@ -39,13 +39,18 @@ func run(ctx context.Context) error {
 	defer pool.Close()
 
 	log.Println("successfully connected to PostgreSQL")
+	if err := db.Migrate(ctx, pool, "migrations"); err != nil {
+		return fmt.Errorf("apply database migrations: %w", err)
+	}
+	log.Println("database migrations applied")
 
 	userRepo := postgres.NewUserRepository(pool)
 	categoryRepo := postgres.NewCategoryRepository(pool)
 	expenseRepo := postgres.NewExpenseRepository(pool)
+	reportRepo := postgres.NewReportRepository(pool)
 
 	client := telegram.NewClient(cfg.TelegramBotToken)
-	handler := telegram.NewHandler(client, userRepo, categoryRepo, expenseRepo)
+	handler := telegram.NewHandler(client, userRepo, categoryRepo, expenseRepo, reportRepo)
 	poller := telegram.NewPoller(client, handler)
 
 	return poller.Run(ctx)

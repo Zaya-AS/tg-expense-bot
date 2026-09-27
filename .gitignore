@@ -21,6 +21,8 @@ coverage.out
 *.coverprofile
 *.prof
 coverage/
+backups/
+*.dump
 
 # Local logs and temporary files
 *.log
