@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/Zaya-AS/tg-expense-bot/internal/category"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -19,10 +20,18 @@ func NewUserRepository(pool *pgxpool.Pool) *UserRepository {
 
 func (r *UserRepository) EnsureUser(ctx context.Context, telegramUserID int64) error {
 	_, err := r.pool.Exec(ctx, `
-	INSERT INTO users (telegram_user_id)
-	VALUES ($1)
-	ON CONFLICT (telegram_user_id) DO NOTHING
-	`, telegramUserID)
+		WITH new_user AS (
+			INSERT INTO users (telegram_user_id)
+			VALUES ($1)
+			ON CONFLICT (telegram_user_id) DO NOTHING
+			RETURNING id
+		)
+		INSERT INTO categories (user_id, name)
+		SELECT new_user.id, defaults.name
+		FROM new_user
+		CROSS JOIN unnest($2::text[]) AS defaults(name)
+		ON CONFLICT (user_id, name) DO NOTHING
+	`, telegramUserID, category.Defaults)
 
 	if err != nil {
 		return fmt.Errorf("ensure user: %w", err)

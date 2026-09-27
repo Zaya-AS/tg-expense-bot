@@ -24,8 +24,21 @@ func NewClient(token string) *Client {
 }
 
 type Update struct {
-	UpdateID int64    `json:"update_id"`
-	Message  *Message `json:"message"`
+	UpdateID      int64          `json:"update_id"`
+	Message       *Message       `json:"message"`
+	CallbackQuery *CallbackQuery `json:"callback_query"`
+}
+
+type CallbackQuery struct {
+	ID      string   `json:"id"`
+	From    User     `json:"from"`
+	Message *Message `json:"message"`
+	Data    string   `json:"data"`
+}
+
+type Button struct {
+	Text string
+	Data string
 }
 
 type Message struct {
@@ -46,11 +59,13 @@ type User struct {
 func (c *Client) GetUpdates(ctx context.Context, offset int64) ([]Update, error) {
 
 	params := struct {
-		Offset  int64 `json:"offset"`
-		Timeout int   `json:"timeout"`
+		Offset         int64    `json:"offset"`
+		Timeout        int      `json:"timeout"`
+		AllowedUpdates []string `json:"allowed_updates"`
 	}{
-		Offset:  offset,
-		Timeout: 30,
+		Offset:         offset,
+		Timeout:        30,
+		AllowedUpdates: []string{"message", "callback_query"},
 	}
 
 	var updates []Update
@@ -73,6 +88,37 @@ func (c *Client) SendMessage(ctx context.Context, chatID int64, text string) err
 	}
 
 	return c.call(ctx, "sendMessage", params, nil)
+}
+
+func (c *Client) SendMessageWithKeyboard(ctx context.Context, chatID int64, text string, buttons []Button) error {
+	type inlineButton struct {
+		Text         string `json:"text"`
+		CallbackData string `json:"callback_data"`
+	}
+	var rows [][]inlineButton
+	for i := 0; i < len(buttons); i += 2 {
+		row := make([]inlineButton, 0, 2)
+		for j := i; j < len(buttons) && j < i+2; j++ {
+			row = append(row, inlineButton{Text: buttons[j].Text, CallbackData: buttons[j].Data})
+		}
+		rows = append(rows, row)
+	}
+	params := struct {
+		ChatID      int64  `json:"chat_id"`
+		Text        string `json:"text"`
+		ReplyMarkup struct {
+			InlineKeyboard [][]inlineButton `json:"inline_keyboard"`
+		} `json:"reply_markup"`
+	}{ChatID: chatID, Text: text}
+	params.ReplyMarkup.InlineKeyboard = rows
+	return c.call(ctx, "sendMessage", params, nil)
+}
+
+func (c *Client) AnswerCallbackQuery(ctx context.Context, callbackID, text string) error {
+	return c.call(ctx, "answerCallbackQuery", struct {
+		CallbackQueryID string `json:"callback_query_id"`
+		Text            string `json:"text,omitempty"`
+	}{CallbackQueryID: callbackID, Text: text}, nil)
 }
 
 func (c *Client) call(ctx context.Context, method string, params any, result any) error {

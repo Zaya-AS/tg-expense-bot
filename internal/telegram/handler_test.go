@@ -9,10 +9,23 @@ import (
 
 type recordingSender struct {
 	messages []string
+	buttons  []Button
+	answers  []string
 }
 
 func (s *recordingSender) SendMessage(_ context.Context, _ int64, message string) error {
 	s.messages = append(s.messages, message)
+	return nil
+}
+
+func (s *recordingSender) SendMessageWithKeyboard(_ context.Context, _ int64, message string, buttons []Button) error {
+	s.messages = append(s.messages, message)
+	s.buttons = append(s.buttons, buttons...)
+	return nil
+}
+
+func (s *recordingSender) AnswerCallbackQuery(_ context.Context, _, answer string) error {
+	s.answers = append(s.answers, answer)
 	return nil
 }
 

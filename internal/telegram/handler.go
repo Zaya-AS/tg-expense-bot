@@ -9,22 +9,15 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Zaya-AS/tg-expense-bot/internal/category"
 	"github.com/Zaya-AS/tg-expense-bot/internal/expense"
 	"github.com/Zaya-AS/tg-expense-bot/internal/report"
 )
 
-const helpText = "Команды:\n" +
-	"/category Еда — добавить категорию\n" +
-	"/categories — список категорий\n" +
-	"/expense 250.50 | Еда | Обед — записать расход\n" +
-	"/last — последние 10 расходов\n" +
-	"/delete 123 — удалить расход по номеру из /last\n" +
-	"/report — расходы за текущий месяц\n" +
-	"/timezone Asia/Yekaterinburg — часовой пояс\n" +
-	"/help — эта справка"
-
 type MessageSender interface {
 	SendMessage(ctx context.Context, chatID int64, text string) error
+	SendMessageWithKeyboard(ctx context.Context, chatID int64, text string, buttons []Button) error
+	AnswerCallbackQuery(ctx context.Context, callbackID, text string) error
 }
 
 type ReportStore interface {
@@ -43,6 +36,12 @@ type UserStore interface {
 type CategoryStore interface {
 	CreateCategory(ctx context.Context, telegramUserID int64, name string) (bool, error)
 	ListCategories(ctx context.Context, telegramUserID int64) ([]string, error)
+	ListCategoryOptions(ctx context.Context, telegramUserID int64) ([]category.Option, error)
+}
+
+type DraftStore interface {
+	SaveDraft(ctx context.Context, telegramUserID, updateID, amountMinor int64, description string) (bool, error)
+	CompleteDraft(ctx context.Context, telegramUserID, updateID, categoryID int64) (bool, string, int64, error)
 }
 
 type ExpenseStore interface {
@@ -63,6 +62,7 @@ type Handler struct {
 	users      UserStore
 	categories CategoryStore
 	expenses   ExpenseStore
+	drafts     DraftStore
 	reports    ReportStore
 }
 
@@ -71,6 +71,7 @@ func NewHandler(
 	users UserStore,
 	categories CategoryStore,
 	expenses ExpenseStore,
+	drafts DraftStore,
 	reports ReportStore,
 ) *Handler {
 	return &Handler{
@@ -78,11 +79,15 @@ func NewHandler(
 		users:      users,
 		categories: categories,
 		expenses:   expenses,
+		drafts:     drafts,
 		reports:    reports,
 	}
 }
 
 func (h *Handler) Handle(ctx context.Context, update Update) error {
+	if update.CallbackQuery != nil {
+		return h.handleCategorySelection(ctx, update.CallbackQuery)
+	}
 	if update.Message == nil {
 		return nil
 	}
@@ -91,7 +96,17 @@ func (h *Handler) Handle(ctx context.Context, update Update) error {
 	}
 
 	message := update.Message
-	command, argument, _ := strings.Cut(strings.TrimSpace(message.Text), " ")
+	input := strings.TrimSpace(message.Text)
+	if input == "" {
+		return nil
+	}
+	if !strings.HasPrefix(input, "/") {
+		if message.From == nil {
+			return nil
+		}
+		return h.beginExpense(ctx, message.Chat.ID, message.From.ID, update.UpdateID, input)
+	}
+	command, argument, _ := strings.Cut(input, " ")
 
 	switch command {
 	case "/start":
@@ -101,10 +116,10 @@ func (h *Handler) Handle(ctx context.Context, update Update) error {
 		if err := h.users.EnsureUser(ctx, message.From.ID); err != nil {
 			return err
 		}
-		return h.client.SendMessage(ctx, message.Chat.ID, "Привет! Я помогу записывать расходы. Отправь /help, чтобы увидеть команды.")
+		return h.client.SendMessage(ctx, message.Chat.ID, welcomeText)
 
 	case "/help":
-		return h.client.SendMessage(ctx, message.Chat.ID, helpText)
+		return h.client.SendMessage(ctx, message.Chat.ID, guideText)
 
 	case "/timezone":
 		if message.From == nil {
@@ -136,12 +151,15 @@ func (h *Handler) Handle(ctx context.Context, update Update) error {
 		if message.From == nil {
 			return nil
 		}
+		if strings.EqualFold(strings.TrimSpace(argument), "all") {
+			return h.sendCategories(ctx, message.Chat.ID, message.From.ID)
+		}
 
-		name := strings.TrimSpace(argument)
+		name := category.Normalize(argument)
 		if name == "" {
 			return h.client.SendMessage(
 				ctx, message.Chat.ID,
-				"Укажи название: /category Еда",
+				"Укажи название: /category кафе",
 			)
 		}
 		if utf8.RuneCountInString(name) > 100 || strings.ContainsAny(name, "|\r\n") {
@@ -171,28 +189,21 @@ func (h *Handler) Handle(ctx context.Context, update Update) error {
 		if message.From == nil {
 			return nil
 		}
-		if err := h.users.EnsureUser(ctx, message.From.ID); err != nil {
-			return err
-		}
-		names, err := h.categories.ListCategories(ctx, message.From.ID)
-		if err != nil {
-			return err
-		}
-		if len(names) == 0 {
-			return h.client.SendMessage(ctx, message.Chat.ID, "Категорий пока нет. Добавь первую: /category Еда")
-		}
-		return h.sendLongText(ctx, message.Chat.ID, "Твои категории:\n• "+strings.Join(names, "\n• "))
+		return h.sendCategories(ctx, message.Chat.ID, message.From.ID)
 
 	case "/expense":
 		if message.From == nil {
 			return nil
+		}
+		if !strings.Contains(argument, "|") {
+			return h.beginExpense(ctx, message.Chat.ID, message.From.ID, update.UpdateID, strings.TrimSpace(argument))
 		}
 
 		parts := strings.SplitN(argument, "|", 3)
 		if len(parts) < 2 {
 			return h.client.SendMessage(
 				ctx, message.Chat.ID,
-				"Пример: /expense 250.50 | Еда | Обед",
+				"Пример: /expense 250.50 | еда | Обед",
 			)
 		}
 
@@ -204,11 +215,11 @@ func (h *Handler) Handle(ctx context.Context, update Update) error {
 			)
 		}
 
-		categoryName := strings.TrimSpace(parts[1])
+		categoryName := category.Normalize(parts[1])
 		if categoryName == "" {
 			return h.client.SendMessage(
 				ctx, message.Chat.ID,
-				"Укажи категорию: /expense 250.50 | Еда | Обед",
+				"Укажи категорию: /expense 250.50 | еда | Обед",
 			)
 		}
 
@@ -348,7 +359,7 @@ func (h *Handler) Handle(ctx context.Context, update Update) error {
 
 		return h.sendLongText(ctx, message.Chat.ID, answer.String())
 	default:
-		return nil
+		return h.client.SendMessage(ctx, message.Chat.ID, guideText)
 	}
 }
 

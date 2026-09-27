@@ -47,10 +47,11 @@ func run(ctx context.Context) error {
 	userRepo := postgres.NewUserRepository(pool)
 	categoryRepo := postgres.NewCategoryRepository(pool)
 	expenseRepo := postgres.NewExpenseRepository(pool)
+	pendingExpenseRepo := postgres.NewPendingExpenseRepository(pool)
 	reportRepo := postgres.NewReportRepository(pool)
 
 	client := telegram.NewClient(cfg.TelegramBotToken)
-	handler := telegram.NewHandler(client, userRepo, categoryRepo, expenseRepo, reportRepo)
+	handler := telegram.NewHandler(client, userRepo, categoryRepo, expenseRepo, pendingExpenseRepo, reportRepo)
 	poller := telegram.NewPoller(client, handler)
 
 	return poller.Run(ctx)

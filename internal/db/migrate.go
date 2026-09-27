@@ -92,8 +92,6 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, directory string) error {
 		}
 	}
 
-	// The first release created these tables through PostgreSQL's init directory.
-	// Record that migration on existing installations without touching their data.
 	if !applied[1] {
 		var users, categories, expenses bool
 		err := tx.QueryRow(ctx, `
@@ -117,6 +115,11 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, directory string) error {
 	for _, m := range migrations {
 		if applied[m.version] {
 			continue
+		}
+		if m.version == categoryNormalizationVersion {
+			if err := normalizeCategories(ctx, tx); err != nil {
+				return fmt.Errorf("apply migration %s: %w", m.name, err)
+			}
 		}
 		if _, err := tx.Exec(ctx, m.sql, pgx.QueryExecModeSimpleProtocol); err != nil {
 			return fmt.Errorf("apply migration %s: %w", m.name, err)

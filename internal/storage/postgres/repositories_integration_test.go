@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Zaya-AS/tg-expense-bot/internal/category"
 	"github.com/Zaya-AS/tg-expense-bot/internal/db"
 	"github.com/Zaya-AS/tg-expense-bot/internal/expense"
 	"github.com/jackc/pgx/v5"
@@ -70,15 +71,127 @@ func TestMigrateExistingSchema(t *testing.T) {
 	if _, err := pool.Exec(ctx, string(initialSQL), pgx.QueryExecModeSimpleProtocol); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := pool.Exec(ctx, `INSERT INTO users (telegram_user_id) VALUES (11), (22)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO categories (user_id, name)
+		SELECT id, 'Еда' FROM users WHERE telegram_user_id = 11
+		UNION ALL
+		SELECT id, 'еда' FROM users WHERE telegram_user_id = 11
+		UNION ALL
+		SELECT id, 'ЕДА' FROM users WHERE telegram_user_id = 22
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO expenses (user_id, category_id, amount_minor, currency, spent_at, source_update_id)
+		SELECT user_id, id, 100, 'RUB', NOW(), id FROM categories
+	`); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Migrate(ctx, pool, "../../../migrations"); err != nil {
 		t.Fatal(err)
 	}
 	var versions int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version IN (1, 2)`).Scan(&versions); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version IN (1, 2, 3, 4)`).Scan(&versions); err != nil {
 		t.Fatal(err)
 	}
-	if versions != 2 {
-		t.Fatalf("applied versions = %d; want 2", versions)
+	if versions != 4 {
+		t.Fatalf("applied versions = %d; want 4", versions)
+	}
+	var normalizedCount, expenseCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM categories AS c
+		JOIN users AS u ON u.id = c.user_id
+		WHERE u.telegram_user_id = 11 AND c.name = 'еда'
+	`).Scan(&normalizedCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM expenses AS e
+		JOIN users AS u ON u.id = e.user_id
+		JOIN categories AS c ON c.id = e.category_id
+		WHERE u.telegram_user_id = 11 AND c.name = 'еда'
+	`).Scan(&expenseCount); err != nil {
+		t.Fatal(err)
+	}
+	if normalizedCount != 1 || expenseCount != 2 {
+		t.Fatalf("normalized categories = %d, preserved expenses = %d; want 1 and 2", normalizedCount, expenseCount)
+	}
+	var categoryCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM categories`).Scan(&categoryCount); err != nil {
+		t.Fatal(err)
+	}
+	if categoryCount != 18 {
+		t.Fatalf("existing users have %d categories; want 18 defaults", categoryCount)
+	}
+	rows, err := pool.Query(ctx, `SELECT name FROM categories`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		if category.Normalize(name) != name {
+			rows.Close()
+			t.Fatalf("category %q was not normalized", name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		t.Fatal(err)
+	}
+	rows.Close()
+}
+
+func TestPendingExpenseSelectionIsOwnedAndIdempotent(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	if err := db.Migrate(ctx, pool, "../../../migrations"); err != nil {
+		t.Fatal(err)
+	}
+	users := NewUserRepository(pool)
+	for _, userID := range []int64{11, 22} {
+		if err := users.EnsureUser(ctx, userID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	categories := NewCategoryRepository(pool)
+	options, err := categories.ListCategoryOptions(ctx, 11)
+	if err != nil || len(options) == 0 {
+		t.Fatalf("options = %v, %v", options, err)
+	}
+	otherOptions, err := categories.ListCategoryOptions(ctx, 22)
+	if err != nil || len(otherOptions) == 0 {
+		t.Fatalf("other options = %v, %v", otherOptions, err)
+	}
+	drafts := NewPendingExpenseRepository(pool)
+	if saved, err := drafts.SaveDraft(ctx, 11, 100, 25050, "Обед"); err != nil || !saved {
+		t.Fatalf("save draft = %v, %v", saved, err)
+	}
+	if created, _, _, err := drafts.CompleteDraft(ctx, 22, 100, options[0].ID); err != nil || created {
+		t.Fatalf("other user completed draft = %v, %v", created, err)
+	}
+	if created, _, _, err := drafts.CompleteDraft(ctx, 11, 100, otherOptions[0].ID); err != nil || created {
+		t.Fatalf("other user's category completed draft = %v, %v", created, err)
+	}
+	created, name, amount, err := drafts.CompleteDraft(ctx, 11, 100, options[0].ID)
+	if err != nil || !created || name != options[0].Name || amount != 25050 {
+		t.Fatalf("complete draft = %v, %q, %d, %v", created, name, amount, err)
+	}
+	if created, _, _, err := drafts.CompleteDraft(ctx, 11, 100, options[0].ID); err != nil || created {
+		t.Fatalf("repeated callback = %v, %v", created, err)
+	}
+	if saved, err := drafts.SaveDraft(ctx, 11, 100, 25050, "Обед"); err != nil || saved {
+		t.Fatalf("replayed update = %v, %v", saved, err)
+	}
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM expenses WHERE source_update_id = 100 AND amount_minor = 25050 AND description = 'Обед'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("saved expenses = %d, %v", count, err)
 	}
 }
 
@@ -97,22 +210,29 @@ func TestExpensesAreOwnedAndDeletionIsIdempotent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	names, err := categories.ListCategories(ctx, 11)
+	if err != nil || len(names) != 9 {
+		t.Fatalf("new user's categories = %v, %v; want 9 defaults", names, err)
+	}
 	if err := users.SetTimezone(ctx, 11, "Asia/Yekaterinburg"); err != nil {
 		t.Fatal(err)
 	}
 	if zone, err := users.Timezone(ctx, 11); err != nil || zone != "Asia/Yekaterinburg" {
 		t.Fatalf("stored timezone = %q, %v", zone, err)
 	}
-	if created, err := categories.CreateCategory(ctx, 11, "Еда"); err != nil || !created {
+	if created, err := categories.CreateCategory(ctx, 11, "КАФЕ"); err != nil || !created {
 		t.Fatalf("create category = %v, %v", created, err)
 	}
-	if _, err := expenses.CreateExpense(ctx, 22, 101, "Еда", 25050, "Обед"); !errors.Is(err, expense.ErrCategoryNotFound) {
+	if created, err := categories.CreateCategory(ctx, 11, "кафе"); err != nil || created {
+		t.Fatalf("duplicate category after normalization = %v, %v", created, err)
+	}
+	if _, err := expenses.CreateExpense(ctx, 22, 101, "КАФЕ", 25050, "Обед"); !errors.Is(err, expense.ErrCategoryNotFound) {
 		t.Fatalf("other user's category error = %v", err)
 	}
-	if created, err := expenses.CreateExpense(ctx, 11, 101, "Еда", 25050, "Обед"); err != nil || !created {
+	if created, err := expenses.CreateExpense(ctx, 11, 101, "КАФЕ", 25050, "Обед"); err != nil || !created {
 		t.Fatalf("create expense = %v, %v", created, err)
 	}
-	if created, err := expenses.CreateExpense(ctx, 11, 101, "Еда", 25050, "Обед"); err != nil || created {
+	if created, err := expenses.CreateExpense(ctx, 11, 101, "кафе", 25050, "Обед"); err != nil || created {
 		t.Fatalf("duplicate expense = %v, %v", created, err)
 	}
 	_, totals, err := reports.CurrentMonth(ctx, 11)
@@ -129,7 +249,7 @@ func TestExpensesAreOwnedAndDeletionIsIdempotent(t *testing.T) {
 	if deleted, err := expenses.DeleteExpense(ctx, 11, items[0].ID); err != nil || !deleted {
 		t.Fatalf("delete own expense = %v, %v", deleted, err)
 	}
-	if created, err := expenses.CreateExpense(ctx, 11, 101, "Еда", 25050, "Обед"); err != nil || created {
+	if created, err := expenses.CreateExpense(ctx, 11, 101, "кафе", 25050, "Обед"); err != nil || created {
 		t.Fatalf("replayed deleted expense = %v, %v", created, err)
 	}
 	items, err = expenses.ListRecent(ctx, 11, 10)

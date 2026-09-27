@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/Zaya-AS/tg-expense-bot/internal/category"
 	"github.com/Zaya-AS/tg-expense-bot/internal/expense"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,6 +27,7 @@ func (r *ExpenseRepository) CreateExpense(
 	amountMinor int64,
 	description string,
 ) (bool, error) {
+	categoryName = category.Normalize(categoryName)
 	var userID, categoryID int64
 
 	err := r.pool.QueryRow(ctx, `
