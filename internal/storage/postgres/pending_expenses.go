@@ -61,7 +61,7 @@ func (r *PendingExpenseRepository) CompleteDraft(ctx context.Context, telegramUs
 		JOIN categories AS c ON c.user_id = d.user_id AND c.id = $3
 		WHERE u.telegram_user_id = $1 AND d.source_update_id = $2
 		  AND d.created_at > NOW() - INTERVAL '1 day'
-		FOR UPDATE OF d
+		FOR UPDATE OF d, u
 	`, telegramUserID, updateID, categoryID).Scan(&userID, &amountMinor, &description, &categoryName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, "", 0, nil
@@ -70,11 +70,7 @@ func (r *PendingExpenseRepository) CompleteDraft(ctx context.Context, telegramUs
 		return false, "", 0, fmt.Errorf("find expense draft: %w", err)
 	}
 
-	result, err := tx.Exec(ctx, `
-		INSERT INTO expenses (user_id, category_id, amount_minor, currency, description, spent_at, source_update_id)
-		VALUES ($1, $2, $3, 'RUB', $4, NOW(), $5)
-		ON CONFLICT (source_update_id) DO NOTHING
-	`, userID, categoryID, amountMinor, description, updateID)
+	created, err := insertNumberedExpense(ctx, tx, userID, categoryID, amountMinor, description, updateID)
 	if err != nil {
 		return false, "", 0, fmt.Errorf("create expense from draft: %w", err)
 	}
@@ -84,5 +80,5 @@ func (r *PendingExpenseRepository) CompleteDraft(ctx context.Context, telegramUs
 	if err := tx.Commit(ctx); err != nil {
 		return false, "", 0, fmt.Errorf("commit expense draft completion: %w", err)
 	}
-	return result.RowsAffected() == 1, categoryName, amountMinor, nil
+	return created, categoryName, amountMinor, nil
 }

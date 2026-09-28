@@ -94,11 +94,11 @@ func TestMigrateExistingSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	var versions int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version IN (1, 2, 3, 4)`).Scan(&versions); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version IN (1, 2, 3, 4, 5)`).Scan(&versions); err != nil {
 		t.Fatal(err)
 	}
-	if versions != 4 {
-		t.Fatalf("applied versions = %d; want 4", versions)
+	if versions != 5 {
+		t.Fatalf("applied versions = %d; want 5", versions)
 	}
 	var normalizedCount, expenseCount int
 	if err := pool.QueryRow(ctx, `
@@ -118,6 +118,19 @@ func TestMigrateExistingSchema(t *testing.T) {
 	}
 	if normalizedCount != 1 || expenseCount != 2 {
 		t.Fatalf("normalized categories = %d, preserved expenses = %d; want 1 and 2", normalizedCount, expenseCount)
+	}
+	for _, tc := range []struct {
+		telegramUserID int64
+		wantNumbers    int
+	}{{11, 2}, {22, 1}} {
+		var count int
+		if err := pool.QueryRow(ctx, `
+			SELECT count(DISTINCT e.user_number)
+			FROM expenses AS e JOIN users AS u ON u.id = e.user_id
+			WHERE u.telegram_user_id = $1 AND e.user_number BETWEEN 1 AND $2
+		`, tc.telegramUserID, tc.wantNumbers).Scan(&count); err != nil || count != tc.wantNumbers {
+			t.Fatalf("migrated numbers for user %d = %d, %v; want %d", tc.telegramUserID, count, err, tc.wantNumbers)
+		}
 	}
 	var categoryCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM categories`).Scan(&categoryCount); err != nil {
@@ -183,6 +196,10 @@ func TestPendingExpenseSelectionIsOwnedAndIdempotent(t *testing.T) {
 	if err != nil || !created || name != options[0].Name || amount != 25050 {
 		t.Fatalf("complete draft = %v, %q, %d, %v", created, name, amount, err)
 	}
+	items, err := NewExpenseRepository(pool).ListRecent(ctx, 11, 10)
+	if err != nil || len(items) != 1 || items[0].Number != 1 {
+		t.Fatalf("first expense from draft = %v, %v", items, err)
+	}
 	if created, _, _, err := drafts.CompleteDraft(ctx, 11, 100, options[0].ID); err != nil || created {
 		t.Fatalf("repeated callback = %v, %v", created, err)
 	}
@@ -240,14 +257,25 @@ func TestExpensesAreOwnedAndDeletionIsIdempotent(t *testing.T) {
 		t.Fatalf("report before delete = %v, %v", totals, err)
 	}
 	items, err := expenses.ListRecent(ctx, 11, 10)
-	if err != nil || len(items) != 1 {
+	if err != nil || len(items) != 1 || items[0].Number != 1 {
 		t.Fatalf("recent expenses = %v, %v", items, err)
 	}
-	if deleted, err := expenses.DeleteExpense(ctx, 22, items[0].ID); err != nil || deleted {
+	if deleted, err := expenses.DeleteExpense(ctx, 22, items[0].Number); err != nil || deleted {
 		t.Fatalf("delete other user's expense = %v, %v", deleted, err)
 	}
-	if deleted, err := expenses.DeleteExpense(ctx, 11, items[0].ID); err != nil || !deleted {
+	if created, err := expenses.CreateExpense(ctx, 22, 102, "еда", 10000, "Ужин"); err != nil || !created {
+		t.Fatalf("create other user's expense = %v, %v", created, err)
+	}
+	otherItems, err := expenses.ListRecent(ctx, 22, 10)
+	if err != nil || len(otherItems) != 1 || otherItems[0].Number != 1 {
+		t.Fatalf("other user's first expense = %v, %v", otherItems, err)
+	}
+	if deleted, err := expenses.DeleteExpense(ctx, 11, items[0].Number); err != nil || !deleted {
 		t.Fatalf("delete own expense = %v, %v", deleted, err)
+	}
+	otherItems, err = expenses.ListRecent(ctx, 22, 10)
+	if err != nil || len(otherItems) != 1 {
+		t.Fatalf("other user's expense after deletion = %v, %v", otherItems, err)
 	}
 	if created, err := expenses.CreateExpense(ctx, 11, 101, "кафе", 25050, "Обед"); err != nil || created {
 		t.Fatalf("replayed deleted expense = %v, %v", created, err)
@@ -259,5 +287,12 @@ func TestExpensesAreOwnedAndDeletionIsIdempotent(t *testing.T) {
 	_, totals, err = reports.CurrentMonth(ctx, 11)
 	if err != nil || len(totals) != 0 {
 		t.Fatalf("report after delete = %v, %v", totals, err)
+	}
+	if created, err := expenses.CreateExpense(ctx, 11, 103, "кафе", 30000, "Завтрак"); err != nil || !created {
+		t.Fatalf("create next expense = %v, %v", created, err)
+	}
+	items, err = expenses.ListRecent(ctx, 11, 10)
+	if err != nil || len(items) != 1 || items[0].Number != 2 {
+		t.Fatalf("number after deletion = %v, %v; want 2", items, err)
 	}
 }

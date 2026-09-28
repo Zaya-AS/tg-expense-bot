@@ -51,6 +51,9 @@ func run(ctx context.Context) error {
 	reportRepo := postgres.NewReportRepository(pool)
 
 	client := telegram.NewClient(cfg.TelegramBotToken)
+	if err := client.RegisterCommands(ctx); err != nil {
+		return fmt.Errorf("register Telegram commands: %w", err)
+	}
 	handler := telegram.NewHandler(client, userRepo, categoryRepo, expenseRepo, pendingExpenseRepo, reportRepo)
 	poller := telegram.NewPoller(client, handler)
 

@@ -29,12 +29,18 @@ func (r *ExpenseRepository) CreateExpense(
 ) (bool, error) {
 	categoryName = category.Normalize(categoryName)
 	var userID, categoryID int64
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin expense creation: %w", err)
+	}
+	defer tx.Rollback(ctx)
 
-	err := r.pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		SELECT u.id, c.id
 		FROM users AS u
 		JOIN categories AS c ON c.user_id = u.id
 		WHERE u.telegram_user_id = $1 AND c.name = $2
+		FOR UPDATE OF u
 	`, telegramUserID, categoryName).Scan(&userID, &categoryID)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -44,24 +50,42 @@ func (r *ExpenseRepository) CreateExpense(
 		return false, fmt.Errorf("find expense category: %w", err)
 	}
 
-	result, err := r.pool.Exec(ctx, `
-		INSERT INTO expenses (
-			user_id, category_id, amount_minor, currency,
-			description, spent_at, source_update_id
-		)
-		VALUES ($1, $2, $3, 'RUB', $4, NOW(), $5)
-		ON CONFLICT (source_update_id) DO NOTHING
-	`, userID, categoryID, amountMinor, description, updateID)
+	created, err := insertNumberedExpense(ctx, tx, userID, categoryID, amountMinor, description, updateID)
 	if err != nil {
 		return false, fmt.Errorf("create expense: %w", err)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit expense creation: %w", err)
+	}
+	return created, nil
+}
 
+// The caller holds a row lock on users so two expenses of the same user
+// cannot receive the same visible number.
+func insertNumberedExpense(ctx context.Context, tx pgx.Tx, userID, categoryID, amountMinor int64, description string, updateID int64) (bool, error) {
+	var number int64
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(MAX(user_number), 0) + 1 FROM expenses WHERE user_id = $1
+	`, userID).Scan(&number); err != nil {
+		return false, fmt.Errorf("next user expense number: %w", err)
+	}
+	result, err := tx.Exec(ctx, `
+		INSERT INTO expenses (
+			user_id, category_id, user_number, amount_minor, currency,
+			description, spent_at, source_update_id
+		)
+		VALUES ($1, $2, $3, $4, 'RUB', $5, NOW(), $6)
+		ON CONFLICT (source_update_id) DO NOTHING
+	`, userID, categoryID, number, amountMinor, description, updateID)
+	if err != nil {
+		return false, err
+	}
 	return result.RowsAffected() == 1, nil
 }
 
 func (r *ExpenseRepository) ListRecent(ctx context.Context, telegramUserID int64, limit int) ([]expense.Record, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT e.id, c.name, e.amount_minor, e.currency, e.description, e.spent_at
+		SELECT e.user_number, c.name, e.amount_minor, e.currency, e.description, e.spent_at
 		FROM expenses AS e
 		JOIN users AS u ON u.id = e.user_id
 		JOIN categories AS c ON c.id = e.category_id AND c.user_id = e.user_id
@@ -78,7 +102,7 @@ func (r *ExpenseRepository) ListRecent(ctx context.Context, telegramUserID int64
 	var records []expense.Record
 	for rows.Next() {
 		var item expense.Record
-		if err := rows.Scan(&item.ID, &item.Category, &item.AmountMinor, &item.Currency, &item.Description, &item.SpentAt); err != nil {
+		if err := rows.Scan(&item.Number, &item.Category, &item.AmountMinor, &item.Currency, &item.Description, &item.SpentAt); err != nil {
 			return nil, fmt.Errorf("scan recent expense: %w", err)
 		}
 		records = append(records, item)
@@ -89,14 +113,14 @@ func (r *ExpenseRepository) ListRecent(ctx context.Context, telegramUserID int64
 	return records, nil
 }
 
-func (r *ExpenseRepository) DeleteExpense(ctx context.Context, telegramUserID, expenseID int64) (bool, error) {
+func (r *ExpenseRepository) DeleteExpense(ctx context.Context, telegramUserID, expenseNumber int64) (bool, error) {
 	result, err := r.pool.Exec(ctx, `
 		UPDATE expenses AS e
 		SET deleted_at = NOW()
 		FROM users AS u
-		WHERE e.id = $1 AND e.user_id = u.id AND u.telegram_user_id = $2
+		WHERE e.user_number = $1 AND e.user_id = u.id AND u.telegram_user_id = $2
 			AND e.deleted_at IS NULL
-	`, expenseID, telegramUserID)
+	`, expenseNumber, telegramUserID)
 	if err != nil {
 		return false, fmt.Errorf("delete expense: %w", err)
 	}

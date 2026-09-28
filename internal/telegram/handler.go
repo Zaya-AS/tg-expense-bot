@@ -54,7 +54,7 @@ type ExpenseStore interface {
 		description string,
 	) (bool, error)
 	ListRecent(ctx context.Context, telegramUserID int64, limit int) ([]expense.Record, error)
-	DeleteExpense(ctx context.Context, telegramUserID, expenseID int64) (bool, error)
+	DeleteExpense(ctx context.Context, telegramUserID, expenseNumber int64) (bool, error)
 }
 
 type Handler struct {
@@ -152,7 +152,7 @@ func (h *Handler) Handle(ctx context.Context, update Update) error {
 			return nil
 		}
 		if strings.EqualFold(strings.TrimSpace(argument), "all") {
-			return h.sendCategories(ctx, message.Chat.ID, message.From.ID)
+			return h.client.SendMessage(ctx, message.Chat.ID, "Для списка категорий используй /category_all или /category-all.")
 		}
 
 		name := category.Normalize(argument)
@@ -185,7 +185,7 @@ func (h *Handler) Handle(ctx context.Context, update Update) error {
 			"Категория «"+name+"» добавлена.",
 		)
 
-	case "/categories":
+	case "/category_all", "/category-all", "/categories":
 		if message.From == nil {
 			return nil
 		}
@@ -293,9 +293,10 @@ func (h *Handler) Handle(ctx context.Context, update Update) error {
 			if utf8.RuneCountInString(description) > 80 {
 				description = string([]rune(description)[:80]) + "…"
 			}
-			fmt.Fprintf(&answer, "#%d %s — %d.%02d %s (%s)", item.ID, item.Category, item.AmountMinor/100, item.AmountMinor%100, item.Currency, item.SpentAt.In(location).Format("02.01 15:04"))
+			fmt.Fprintf(&answer, "#%d %s — %d.%02d %s (%s)", item.Number, item.Category, item.AmountMinor/100, item.AmountMinor%100, item.Currency, item.SpentAt.In(location).Format("02.01 15:04"))
 			if description != "" {
-				answer.WriteString(" — " + description)
+				answer.WriteString(" — ")
+				answer.WriteString(description)
 			}
 			answer.WriteByte('\n')
 		}

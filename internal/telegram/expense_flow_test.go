@@ -81,6 +81,25 @@ func TestBareExpenseUsesCategoryButton(t *testing.T) {
 }
 
 func TestCategoryAllListsInsteadOfCreating(t *testing.T) {
+	for _, command := range []string{"/category_all", "/category-all"} {
+		t.Run(command, func(t *testing.T) {
+			sender := &recordingSender{}
+			categories := &flowCategories{}
+			handler := &Handler{client: sender, users: &testUserStore{}, categories: categories}
+			err := handler.Handle(context.Background(), Update{Message: &Message{
+				Chat: Chat{ID: 11, Type: "private"}, From: &User{ID: 11}, Text: command,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if categories.created != 0 || len(sender.messages) != 1 || !strings.Contains(sender.messages[0], "кафе") {
+				t.Fatalf("created = %d, messages = %v", categories.created, sender.messages)
+			}
+		})
+	}
+}
+
+func TestOldCategoryAllNoLongerListsOrCreates(t *testing.T) {
 	sender := &recordingSender{}
 	categories := &flowCategories{}
 	handler := &Handler{client: sender, users: &testUserStore{}, categories: categories}
@@ -90,7 +109,7 @@ func TestCategoryAllListsInsteadOfCreating(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if categories.created != 0 || len(sender.messages) != 1 || !strings.Contains(sender.messages[0], "кафе") {
+	if categories.created != 0 || len(sender.messages) != 1 || !strings.Contains(sender.messages[0], "/category_all") {
 		t.Fatalf("created = %d, messages = %v", categories.created, sender.messages)
 	}
 }
@@ -104,7 +123,7 @@ func TestStartExplainsUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sender.messages) != 1 || !strings.Contains(sender.messages[0], "250.50 Обед") || !strings.Contains(sender.messages[0], "/category all") {
+	if len(sender.messages) != 1 || !strings.Contains(sender.messages[0], "250.50 Обед") || !strings.Contains(sender.messages[0], "/category_all") {
 		t.Fatalf("welcome = %v", sender.messages)
 	}
 }
