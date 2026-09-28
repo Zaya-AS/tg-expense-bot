@@ -40,7 +40,7 @@ func TestRegisterCommandsUsesPrivateChatMenu(t *testing.T) {
 			}
 			seen[command.Command] = command.Description
 		}
-		for _, name := range []string{"start", "help", "category", "category_all", "last", "delete", "report", "timezone"} {
+		for _, name := range []string{"start", "help", "category", "category_all", "last", "delete", "report", "export", "timezone"} {
 			if seen[name] == "" {
 				t.Errorf("missing %q command", name)
 			}

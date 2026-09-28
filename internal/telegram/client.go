@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 )
 
@@ -121,20 +124,43 @@ func (c *Client) AnswerCallbackQuery(ctx context.Context, callbackID, text strin
 	}{CallbackQueryID: callbackID, Text: text}, nil)
 }
 
+func (c *Client) SendDocument(ctx context.Context, chatID int64, filename string, data []byte) error {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
+		return fmt.Errorf("write document chat ID: %w", err)
+	}
+	part, err := writer.CreateFormFile("document", filename)
+	if err != nil {
+		return fmt.Errorf("create document part: %w", err)
+	}
+	if _, err := part.Write(data); err != nil {
+		return fmt.Errorf("write document: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("close document upload: %w", err)
+	}
+	return c.request(ctx, "sendDocument", &body, writer.FormDataContentType(), nil)
+}
+
 func (c *Client) call(ctx context.Context, method string, params any, result any) error {
 	body, err := json.Marshal(params)
 	if err != nil {
 		return fmt.Errorf("encode %s request: %w", method, err)
 	}
 
+	return c.request(ctx, method, bytes.NewReader(body), "application/json", result)
+}
+
+func (c *Client) request(ctx context.Context, method string, body io.Reader, contentType string, result any) error {
 	endpoint := "https://api.telegram.org/bot" + c.token + "/" + method
 	req, err := http.NewRequestWithContext(
-		ctx, http.MethodPost, endpoint, bytes.NewReader(body),
+		ctx, http.MethodPost, endpoint, body,
 	)
 	if err != nil {
 		return fmt.Errorf("create %s request", method)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 
 	resp, err := c.http.Do(req)
 	if err != nil {

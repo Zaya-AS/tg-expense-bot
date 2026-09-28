@@ -11,10 +11,18 @@ type recordingSender struct {
 	messages []string
 	buttons  []Button
 	answers  []string
+	document []byte
+	filename string
 }
 
 func (s *recordingSender) SendMessage(_ context.Context, _ int64, message string) error {
 	s.messages = append(s.messages, message)
+	return nil
+}
+
+func (s *recordingSender) SendDocument(_ context.Context, _ int64, filename string, data []byte) error {
+	s.filename = filename
+	s.document = append([]byte(nil), data...)
 	return nil
 }
 

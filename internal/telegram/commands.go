@@ -24,6 +24,7 @@ func (c *Client) RegisterCommands(ctx context.Context) error {
 			{Command: "last", Description: "Показать последние 10 расходов и их номера"},
 			{Command: "delete", Description: "Удалить расход: /delete 123"},
 			{Command: "report", Description: "Показать расходы за текущий месяц"},
+			{Command: "export", Description: "Скачать все расходы по месяцам в Excel"},
 			{Command: "timezone", Description: "Посмотреть или задать часовой пояс"},
 		},
 	}

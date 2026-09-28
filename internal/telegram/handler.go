@@ -16,6 +16,7 @@ import (
 
 type MessageSender interface {
 	SendMessage(ctx context.Context, chatID int64, text string) error
+	SendDocument(ctx context.Context, chatID int64, filename string, data []byte) error
 	SendMessageWithKeyboard(ctx context.Context, chatID int64, text string, buttons []Button) error
 	AnswerCallbackQuery(ctx context.Context, callbackID, text string) error
 }
@@ -54,6 +55,7 @@ type ExpenseStore interface {
 		description string,
 	) (bool, error)
 	ListRecent(ctx context.Context, telegramUserID int64, limit int) ([]expense.Record, error)
+	ListForExport(ctx context.Context, telegramUserID int64) ([]expense.Record, error)
 	DeleteExpense(ctx context.Context, telegramUserID, expenseNumber int64) (bool, error)
 }
 
@@ -359,6 +361,8 @@ func (h *Handler) Handle(ctx context.Context, update Update) error {
 		)
 
 		return h.sendLongText(ctx, message.Chat.ID, answer.String())
+	case "/export":
+		return h.exportExpenses(ctx, message)
 	default:
 		return h.client.SendMessage(ctx, message.Chat.ID, guideText)
 	}

@@ -113,6 +113,34 @@ func (r *ExpenseRepository) ListRecent(ctx context.Context, telegramUserID int64
 	return records, nil
 }
 
+func (r *ExpenseRepository) ListForExport(ctx context.Context, telegramUserID int64) ([]expense.Record, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT e.user_number, c.name, e.amount_minor, e.currency, e.description, e.spent_at
+		FROM expenses AS e
+		JOIN users AS u ON u.id = e.user_id
+		JOIN categories AS c ON c.id = e.category_id AND c.user_id = e.user_id
+		WHERE u.telegram_user_id = $1 AND e.deleted_at IS NULL
+		ORDER BY e.spent_at, e.id
+	`, telegramUserID)
+	if err != nil {
+		return nil, fmt.Errorf("query expenses for export: %w", err)
+	}
+	defer rows.Close()
+
+	var records []expense.Record
+	for rows.Next() {
+		var item expense.Record
+		if err := rows.Scan(&item.Number, &item.Category, &item.AmountMinor, &item.Currency, &item.Description, &item.SpentAt); err != nil {
+			return nil, fmt.Errorf("scan expense for export: %w", err)
+		}
+		records = append(records, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read expenses for export: %w", err)
+	}
+	return records, nil
+}
+
 func (r *ExpenseRepository) DeleteExpense(ctx context.Context, telegramUserID, expenseNumber int64) (bool, error) {
 	result, err := r.pool.Exec(ctx, `
 		UPDATE expenses AS e

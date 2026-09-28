@@ -277,6 +277,14 @@ func TestExpensesAreOwnedAndDeletionIsIdempotent(t *testing.T) {
 	if err != nil || len(otherItems) != 1 {
 		t.Fatalf("other user's expense after deletion = %v, %v", otherItems, err)
 	}
+	exported, err := expenses.ListForExport(ctx, 11)
+	if err != nil || len(exported) != 0 {
+		t.Fatalf("deleted user's export = %v, %v", exported, err)
+	}
+	exported, err = expenses.ListForExport(ctx, 22)
+	if err != nil || len(exported) != 1 || exported[0].Description != "Ужин" {
+		t.Fatalf("other user's export = %v, %v", exported, err)
+	}
 	if created, err := expenses.CreateExpense(ctx, 11, 101, "кафе", 25050, "Обед"); err != nil || created {
 		t.Fatalf("replayed deleted expense = %v, %v", created, err)
 	}
